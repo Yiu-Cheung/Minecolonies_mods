@@ -430,14 +430,14 @@ public class McMod {
             // Use the creative resolve system to fulfill the request
             fulfillRequestWithCreativeResolve(request, colony, building, requestable);
             
-        } catch (Exception e) {
+            } catch (Exception e) {
             log("[mc_mod] Exception in processRequest: " + e);
             failedFulfillments++;
-        }
+            }
     }
     
     private boolean isDeliverable(Object requestable) {
-        try {
+            try {
             // Check if the requestable implements IDeliverable
             Class<?> deliverableClass = Class.forName("com.minecolonies.api.colony.requestsystem.requestable.IDeliverable");
             return deliverableClass.isInstance(requestable);
@@ -494,7 +494,7 @@ public class McMod {
                     itemName = itemName.substring(6);
                 }
                 itemName = itemName.replace("minecraft.", "").replace("minecolonies.", "");
-            } catch (Exception e) {
+                            } catch (Exception e) {
                 log("[mc_mod] Could not get item name: " + e.getMessage());
             }
             
@@ -521,7 +521,7 @@ public class McMod {
                 String buildingName = building.getClass().getSimpleName().replace("Building", "");
                 sendServerMessage("Fulfilled " + finalCount + "x " + itemName + " for " + buildingName, "SUCCESS");
                 successfulFulfillments++;
-            } else {
+                } else {
                 log("[mc_mod] Could not add all items to inventory, request not resolved");
                 log("[mc_mod] Remaining item stack is null: " + (remainingItemStack == null));
                 if (remainingItemStack != null) {
@@ -531,7 +531,7 @@ public class McMod {
                 failedFulfillments++;
             }
             
-                    } catch (Exception e) {
+            } catch (Exception e) {
             log("[mc_mod] Exception in fulfillRequestWithCreativeResolve: " + e);
             sendServerMessage("Error fulfilling request: " + e.getMessage(), "ERROR");
             failedFulfillments++;
@@ -570,9 +570,9 @@ public class McMod {
                     method.getParameterCount() == 2 &&
                     method.getParameterTypes()[1] == itemStackClass) {
                     targetMethod = method;
-                                    break;
-                                }
+                                break;
                             }
+                        }
             
             if (targetMethod == null) {
                 log("[mc_mod] Could not find addItemStackToItemHandlerWithResult method");
@@ -583,7 +583,7 @@ public class McMod {
             
             log("[mc_mod] InventoryUtils.addItemStackToItemHandlerWithResult returned: " + (result != null ? result.getClass().getName() : "null"));
             return result;
-                        } catch (Exception e) {
+                } catch (Exception e) {
             log("[mc_mod] Exception adding item to citizen inventory: " + e.getMessage());
             log("[mc_mod] Exception stack trace: " + e.toString());
             return null;
@@ -595,7 +595,7 @@ public class McMod {
             // Use official ItemStackUtils.isEmpty method (like official creative resolve logic)
             Class<?> itemStackUtilsClass = Class.forName("com.minecolonies.api.util.ItemStackUtils");
             return (boolean) itemStackUtilsClass.getMethod("isEmpty", Class.forName("net.minecraft.world.item.ItemStack")).invoke(null, itemStack);
-        } catch (Exception e) {
+                    } catch (Exception e) {
             log("[mc_mod] Exception checking if item stack is empty: " + e.getMessage());
             return false;
         }
@@ -609,7 +609,7 @@ public class McMod {
                 return (int) requestable.getClass().getMethod("getCount").invoke(requestable);
             }
             return 1; // Default to 1 if we can't determine
-        } catch (Exception e) {
+                        } catch (Exception e) {
             log("[mc_mod] Exception getting request count: " + e);
             return 1;
         }
@@ -637,7 +637,7 @@ public class McMod {
                 LOGGER.info("[mc_mod] ServerLifecycleHooks.getCurrentServer() returned null");
             }
             return server;
-        } catch (Exception e) {
+            } catch (Exception e) {
             LOGGER.error("[mc_mod] Error calling ServerLifecycleHooks.getCurrentServer(): {}", e.getMessage());
             return null;
         }
@@ -680,8 +680,8 @@ public class McMod {
             
                     if (building != null) {
                 log("[mc_mod] Found building using official method: " + building.getClass().getSimpleName());
-                            return building;
-            }
+                        return building;
+                    }
         } catch (Exception e) {
             log("[mc_mod] Exception in getBuildingOfficial: " + e);
         }
@@ -719,8 +719,8 @@ public class McMod {
                 if (citizenOptional != null && citizenOptional.isPresent()) {
                     log("[mc_mod] Found citizen for specific request");
                     return citizenOptional.get();
-                }
-            } catch (Exception e) {
+                    }
+                } catch (Exception e) {
                 log("[mc_mod] Exception getting citizen for specific request: " + e.getMessage());
             }
             
@@ -733,7 +733,7 @@ public class McMod {
                     log("[mc_mod] Found " + assignedCitizens.size() + " assigned citizens, using first one");
                     return assignedCitizens.iterator().next();
                 }
-            } catch (Exception e) {
+        } catch (Exception e) {
                 log("[mc_mod] Exception getting assigned citizens: " + e.getMessage());
             }
             
@@ -744,7 +744,7 @@ public class McMod {
             return null;
         }
     }
-
+    
     // Register the /mcmod command
     private void onRegisterCommands(RegisterCommandsEvent event) {
         event.getDispatcher().register(Commands.literal("mcmod")
@@ -770,7 +770,7 @@ public class McMod {
                                 setAutofulfillDelay(seconds);
                                 context.getSource().sendSuccess(() -> Component.literal("Autofulfill delay set to " + seconds + " seconds"), false);
                                 return 1;
-                            } catch (Exception e) {
+        } catch (Exception e) {
                                 context.getSource().sendFailure(Component.literal("Error setting delay: " + e.getMessage()));
                                 return 0;
                             }
@@ -838,17 +838,17 @@ public class McMod {
                 if (apiInstance == null) {
                     LOGGER.warn("[mc_mod] MineColonies API not ready yet, retrying in 30 seconds...");
                     executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
-                    return;
-                }
-                
+                return;
+            }
+            
                 // Check if colony manager is available
                 Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
                 if (colonyManager == null) {
                     LOGGER.warn("[mc_mod] MineColonies ColonyManager not ready yet, retrying in 30 seconds...");
                     executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
-                    return;
-                }
-                
+                return;
+            }
+            
                 // Additional check: try to get colonies to ensure everything is fully loaded
                 try {
                     Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
@@ -873,7 +873,7 @@ public class McMod {
                 autofulfillTask = executor.scheduleAtFixedRate(() -> {
                     try {
                         INSTANCE.autoFulfillBuilderRequests();
-                    } catch (Exception e) {
+        } catch (Exception e) {
                         LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
                     }
                 }, 60, autofulfillCheckTimeSeconds, TimeUnit.SECONDS); // 60 second initial delay, then configurable interval
@@ -974,7 +974,7 @@ public class McMod {
             autofulfillTask = executor.scheduleAtFixedRate(() -> {
                 try {
                     INSTANCE.autoFulfillBuilderRequests();
-                } catch (Exception e) {
+                    } catch (Exception e) {
                     LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
                 }
             }, 0, autofulfillCheckTimeSeconds, TimeUnit.SECONDS);
