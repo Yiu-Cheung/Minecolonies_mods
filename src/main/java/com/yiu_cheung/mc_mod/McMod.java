@@ -55,32 +55,16 @@ public class McMod {
         // Register command handler
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
         
-        // Start a background thread to poll for the server instance
-        new Thread(() -> {
-            LOGGER.info("[mc_mod] Polling for MinecraftServer instance...");
-            sendServerMessage("[mc_mod] Polling for MinecraftServer instance...");
-            MinecraftServer server = null;
-            while (server == null) {
-                try {
-                    Thread.sleep(1000);
-                } catch (InterruptedException ignored) {}
-                server = getServerInstance();
-            }
-            LOGGER.info("[mc_mod] MinecraftServer instance found, scheduling auto-fulfill poller");
-            sendServerMessage("[mc_mod] MinecraftServer instance found, scheduling auto-fulfill poller");
-            MinecraftServer finalServer = server;
-            finalServer.execute(() -> {
-                LOGGER.info("[mc_mod] Scheduling auto-fulfill poller on main server thread");
-                sendServerMessage("[mc_mod] Scheduling auto-fulfill poller on main server thread");
-                executor.scheduleAtFixedRate(() -> INSTANCE.autoFulfillBuilderRequests(), 5, 5, java.util.concurrent.TimeUnit.SECONDS);
-            });
-        }, "mc_mod-server-poller").start();
+        // Register server started event listener
+        NeoForge.EVENT_BUS.addListener(McMod::onServerStarted);
+        
+        // Don't start background thread here - wait for server to be ready
+        LOGGER.info("[mc_mod] Mod initialized, waiting for server to start...");
     }
 
     private static void onCommonSetup(FMLCommonSetupEvent event) {
-        LOGGER.info("[mc_mod] FMLCommonSetupEvent received, scheduling auto-fulfill poller");
-        sendServerMessage("[mc_mod] FMLCommonSetupEvent received, scheduling auto-fulfill poller");
-        executor.scheduleAtFixedRate(() -> INSTANCE.autoFulfillBuilderRequests(), 5, 5, TimeUnit.SECONDS);
+        LOGGER.info("[mc_mod] FMLCommonSetupEvent received");
+        // Don't start autofulfill here - wait for server to be ready
     }
 
     public static void sendServerMessage(String msg) {
@@ -197,13 +181,25 @@ public class McMod {
             // Reset stats periodically
             resetStats();
             
-            // Step 1: Get IMinecoloniesAPI instance
+            // Step 1: Get IMinecoloniesAPI instance with safety check
             Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
             Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
+            
+            if (apiInstance == null) {
+                LOGGER.debug("[mc_mod] MineColonies API not ready, skipping autofulfill cycle");
+                return;
+            }
+            
             LOGGER.debug("[mc_mod] IMinecoloniesAPI instance: {}", apiInstance);
 
-            // Step 2: Get ColonyManager
+            // Step 2: Get ColonyManager with safety check
             Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
+            
+            if (colonyManager == null) {
+                LOGGER.debug("[mc_mod] MineColonies ColonyManager not ready, skipping autofulfill cycle");
+                return;
+            }
+            
             LOGGER.debug("[mc_mod] ColonyManager: {}", colonyManager);
 
             // Step 3: Get all colonies
@@ -229,7 +225,10 @@ public class McMod {
             
         } catch (Exception e) {
             LOGGER.error("[mc_mod] Error in autoFulfillBuilderRequests: {}", e.getMessage(), e);
-            sendServerMessage("Autofulfill error: " + e.getMessage(), "ERROR");
+            // Don't send error message to players for initialization issues
+            if (!e.getMessage().contains("not ready")) {
+                sendServerMessage("Autofulfill error: " + e.getMessage(), "ERROR");
+            }
         }
     }
     
@@ -697,9 +696,47 @@ public class McMod {
 
     // Remove @SubscribeEvent from onServerStarted, and register via event bus instead
     public static void onServerStarted(ServerStartedEvent event) {
-        LOGGER.info("[mc_mod] ServerStartedEvent received, scheduling auto-fulfill poller");
-        sendServerMessage("[mc_mod] ServerStartedEvent received, scheduling auto-fulfill poller");
-        executor.scheduleAtFixedRate(() -> INSTANCE.autoFulfillBuilderRequests(), 5, 5, TimeUnit.SECONDS);
+        LOGGER.info("[mc_mod] ServerStartedEvent received, waiting for MineColonies to be ready...");
+        
+        // Wait a bit for MineColonies to fully initialize
+        executor.schedule(() -> {
+            try {
+                // Check if MineColonies is ready
+                Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
+                Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
+                
+                if (apiInstance == null) {
+                    LOGGER.warn("[mc_mod] MineColonies API not ready yet, retrying in 10 seconds...");
+                    executor.schedule(() -> onServerStarted(event), 10, TimeUnit.SECONDS);
+                    return;
+                }
+                
+                // Check if colony manager is available
+                Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
+                if (colonyManager == null) {
+                    LOGGER.warn("[mc_mod] MineColonies ColonyManager not ready yet, retrying in 10 seconds...");
+                    executor.schedule(() -> onServerStarted(event), 10, TimeUnit.SECONDS);
+                    return;
+                }
+                
+                LOGGER.info("[mc_mod] MineColonies is ready, starting auto-fulfill poller");
+                sendServerMessage("Autofulfill system started", "INFO");
+                
+                // Start the autofulfill poller with a longer initial delay
+                executor.scheduleAtFixedRate(() -> {
+                    try {
+                        INSTANCE.autoFulfillBuilderRequests();
+                    } catch (Exception e) {
+                        LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
+                    }
+                }, 30, 5, TimeUnit.SECONDS); // 30 second initial delay, then every 5 seconds
+                
+            } catch (Exception e) {
+                LOGGER.error("[mc_mod] Error checking MineColonies readiness: {}", e.getMessage());
+                // Retry after 30 seconds if there's an error
+                executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
+            }
+        }, 10, TimeUnit.SECONDS); // Wait 10 seconds before first check
     }
 
     // Replace log() to use debug for routine messages
