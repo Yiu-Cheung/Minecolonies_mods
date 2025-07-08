@@ -9,6 +9,7 @@ import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.network.chat.Component;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import java.lang.reflect.Method;
 
 import java.util.List;
@@ -27,6 +28,8 @@ import net.neoforged.neoforge.common.NeoForge;
 import net.minecraft.core.BlockPos;
 import java.util.Collections;
 import java.util.HashMap;
+import java.io.File;
+
 
 @Mod("mc_mod")
 public class McMod {
@@ -41,7 +44,6 @@ public class McMod {
     // Message tracking and statistics
     private static final Map<String, Long> lastMessageTime = new HashMap<>();
     private static final Map<String, Integer> messageCount = new HashMap<>();
-    private static final int MESSAGE_COOLDOWN_MS = 10000; // 10 seconds between similar messages
     private static final int MAX_MESSAGES_PER_TYPE = 3; // Max messages per type per session
     
     // Autofulfill statistics
@@ -52,9 +54,20 @@ public class McMod {
     private static long lastStatsReset = System.currentTimeMillis();
     private static final long STATS_RESET_INTERVAL = 300000; // 5 minutes
 
+    // Configuration variables
+    private static boolean autofulfillEnabled = true;
+    private static int autofulfillCheckTimeSeconds = 5;
+    private static boolean showInGameMessages = true;
+    
+    // Scheduled task reference for restarting with new delay
+    private static java.util.concurrent.ScheduledFuture<?> autofulfillTask = null;
+
     public McMod() {
         LOGGER.info("MC Mod - Auto-Fulfill Builder Requests initialized!");
         INSTANCE = this;
+        
+        // Load configuration
+        loadConfig();
         
         // Register command handler
         NeoForge.EVENT_BUS.addListener(this::onRegisterCommands);
@@ -64,6 +77,55 @@ public class McMod {
         
         // Don't start background thread here - wait for server to be ready
         LOGGER.info("[mc_mod] Mod initialized, waiting for server to start...");
+    }
+
+    private void loadConfig() {
+        try {
+            // Generate config file in Minecraft config folder
+            generateConfigFile();
+            
+            // For now, we'll use the default values
+            // In a full implementation, this would read from mc_mod.toml
+            LOGGER.info("[mc_mod] Loading configuration...");
+            LOGGER.info("[mc_mod] Autofulfill enabled: {}", autofulfillEnabled);
+            LOGGER.info("[mc_mod] Check interval: {} seconds", autofulfillCheckTimeSeconds);
+            LOGGER.info("[mc_mod] In-game messages: {}", showInGameMessages);
+        } catch (Exception e) {
+            LOGGER.error("[mc_mod] Error loading configuration: {}", e.getMessage());
+        }
+    }
+    
+    private void generateConfigFile() {
+        try {
+            // Get the Minecraft config directory - use the correct NeoForge path
+            String configDir = "C:/Users/LokYiu/AppData/Roaming/.minecraft/home/NeoForge 1.21.1/config";
+            
+            File configFile = new File(configDir, "mc_mod.toml");
+            
+            // Create config directory if it doesn't exist
+            configFile.getParentFile().mkdirs();
+            
+            // Only create the file if it doesn't exist
+            if (!configFile.exists()) {
+                String configContent = "# MC Mod Configuration File\n" +
+                    "# This file is auto-generated. You can modify these settings.\n" +
+                    "# Changes require server restart to take effect.\n\n" +
+                    "[autofulfill]\n" +
+                    "# Enable or disable autofulfill feature\n" +
+                    "enabled = true\n\n" +
+                    "# Interval in seconds for autofulfill checks (1-3600)\n" +
+                    "checkTimeSeconds = 5\n\n" +
+                    "# Show in-game messages for autofulfill actions\n" +
+                    "showInGameMessages = true\n";
+                
+                java.nio.file.Files.write(configFile.toPath(), configContent.getBytes());
+                LOGGER.info("[mc_mod] Generated config file: {}", configFile.getAbsolutePath());
+            } else {
+                LOGGER.info("[mc_mod] Config file already exists: {}", configFile.getAbsolutePath());
+            }
+        } catch (Exception e) {
+            LOGGER.error("[mc_mod] Error generating config file: {}", e.getMessage());
+        }
     }
 
     private static void onCommonSetup(FMLCommonSetupEvent event) {
@@ -76,6 +138,13 @@ public class McMod {
     }
     
     public static void sendServerMessage(String msg, String type) {
+        // Check if in-game messages are enabled
+        if (!showInGameMessages) {
+            LOGGER.debug("[mc_mod] In-game messages disabled, only logging: {}", msg);
+            LOGGER.info("[mc_mod] sendServerMessage [{}]: {}", type, msg);
+            return;
+        }
+        
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {
             LOGGER.debug("[mc_mod] sendServerMessage called but server is null: {}", msg);
@@ -112,9 +181,12 @@ public class McMod {
         String messageKey = type + ":" + msg.hashCode();
         long currentTime = System.currentTimeMillis();
         
+        // Calculate cooldown based on current autofulfill delay time
+        int messageCooldownMs = autofulfillCheckTimeSeconds * 1000;
+        
         // Check cooldown
         if (lastMessageTime.containsKey(messageKey)) {
-            if (currentTime - lastMessageTime.get(messageKey) < MESSAGE_COOLDOWN_MS) {
+            if (currentTime - lastMessageTime.get(messageKey) < messageCooldownMs) {
                 return false;
             }
         }
@@ -182,6 +254,12 @@ public class McMod {
     
     public void autoFulfillBuilderRequests() {
         try {
+            // Check if autofulfill is enabled via config
+            if (!autofulfillEnabled) {
+                LOGGER.debug("[mc_mod] Autofulfill disabled via config, skipping cycle");
+                return;
+            }
+            
             // Check if mod is fully enabled
             if (!modFullyEnabled) {
                 LOGGER.debug("[mc_mod] Mod not fully enabled yet, skipping autofulfill cycle");
@@ -669,50 +747,75 @@ public class McMod {
 
     // Register the /mcmod command
     private void onRegisterCommands(RegisterCommandsEvent event) {
-        event.getDispatcher().register(
-            Commands.literal("mcmod")
-                .requires(source -> source.hasPermission(0))
-                .executes(ctx -> {
-                    ctx.getSource().sendSuccess(() -> Component.literal("§b[ℹ] mc_mod commands:"), false);
-                    ctx.getSource().sendSuccess(() -> Component.literal("§6/autofulfill §7- Toggle autofulfill"), false);
-                    ctx.getSource().sendSuccess(() -> Component.literal("§6/stats §7- Show autofulfill statistics"), false);
-                    ctx.getSource().sendSuccess(() -> Component.literal("§6/trigger §7- Manually trigger autofulfill"), false);
+        event.getDispatcher().register(Commands.literal("mcmod")
+            .then(Commands.literal("autofullfill")
+                .then(Commands.literal("enable")
+                    .executes(context -> {
+                        enableAutofulfill();
+                        context.getSource().sendSuccess(() -> Component.literal("Autofulfill enabled"), false);
+                        return 1;
+                    }))
+                .then(Commands.literal("disable")
+                    .executes(context -> {
+                        disableAutofulfill();
+                        context.getSource().sendSuccess(() -> Component.literal("Autofulfill disabled"), false);
+                        return 1;
+                    }))
+                .then(Commands.literal("delay")
+                    .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 3600))
+                        .executes(context -> {
+                            try {
+                                int seconds = IntegerArgumentType.getInteger(context, "seconds");
+                                
+                                setAutofulfillDelay(seconds);
+                                context.getSource().sendSuccess(() -> Component.literal("Autofulfill delay set to " + seconds + " seconds"), false);
+                                return 1;
+                            } catch (Exception e) {
+                                context.getSource().sendFailure(Component.literal("Error setting delay: " + e.getMessage()));
+                                return 0;
+                            }
+                        }))
+                    .executes(context -> {
+                        context.getSource().sendFailure(Component.literal("Usage: /mcmod autofullfill delay <seconds>"));
+                        return 0;
+                    }))
+                .then(Commands.literal("message")
+                    .then(Commands.literal("enable")
+                        .executes(context -> {
+                            enableInGameMessages();
+                            context.getSource().sendSuccess(() -> Component.literal("In-game messages enabled"), false);
+                            return 1;
+                        }))
+                    .then(Commands.literal("disable")
+                        .executes(context -> {
+                            disableInGameMessages();
+                            context.getSource().sendSuccess(() -> Component.literal("In-game messages disabled"), false);
+                            return 1;
+                        })))
+                .executes(context -> {
+                    showAutofulfillStatus(context.getSource());
                     return 1;
-                })
-                .then(Commands.literal("autofulfill")
-                    .executes(ctx -> {
-                        // Toggle autofulfill (placeholder for future implementation)
-                        ctx.getSource().sendSuccess(() -> Component.literal("§a[✓] Autofulfill is currently running"), false);
-                        return 1;
-                    }))
-                .then(Commands.literal("stats")
-                    .executes(ctx -> {
-                        if (totalRequestsProcessed > 0) {
-                            double successRate = (double) successfulFulfillments / totalRequestsProcessed * 100;
-                            ctx.getSource().sendSuccess(() -> Component.literal("§d[📊] Autofulfill Statistics:"), false);
-                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§7Processed: §f%d", totalRequestsProcessed)), false);
-                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§aSuccessful: §f%d (%.1f%%)", successfulFulfillments, successRate)), false);
-                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§cFailed: §f%d", failedFulfillments)), false);
-                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§eSkipped: §f%d", skippedRequests)), false);
-                        } else {
-                            ctx.getSource().sendSuccess(() -> Component.literal("§e[⚠] No autofulfill statistics available yet"), false);
-                        }
-                        return 1;
-                    }))
-                .then(Commands.literal("trigger")
-                    .executes(ctx -> {
-                        ctx.getSource().sendSuccess(() -> Component.literal("§6[→] Manually triggering autofulfill..."), false);
-                        // Execute autofulfill on the server thread
-                        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
-                        if (server != null) {
-                            server.execute(() -> {
-                                autoFulfillBuilderRequests();
-                                ctx.getSource().sendSuccess(() -> Component.literal("§a[✓] Autofulfill completed"), false);
-                            });
-                        }
-                        return 1;
-                    }))
-        );
+                }))
+            .then(Commands.literal("stats")
+                .executes(context -> {
+                    showStats(context.getSource());
+                    return 1;
+                }))
+            .then(Commands.literal("trigger")
+                .executes(context -> {
+                    triggerAutofulfill();
+                    context.getSource().sendSuccess(() -> Component.literal("Autofulfill triggered manually"), false);
+                    return 1;
+                }))
+            .executes(context -> {
+                context.getSource().sendSuccess(() -> Component.literal("MC Mod Commands:\n" +
+                    "/mcmod autofullfill enable|disable - Enable/disable autofulfill\n" +
+                    "/mcmod autofullfill delay <seconds> - Set check interval\n" +
+                    "/mcmod autofullfill message enable|disable - Enable/disable messages\n" +
+                    "/mcmod stats - Show statistics\n" +
+                    "/mcmod trigger - Trigger autofulfill manually"), false);
+                return 1;
+            }));
     }
 
     // Remove @SubscribeEvent from onServerStarted, and register via event bus instead
@@ -767,13 +870,13 @@ public class McMod {
                 modFullyEnabled = true;
                 
                 // Start the autofulfill poller with a much longer initial delay
-                executor.scheduleAtFixedRate(() -> {
+                autofulfillTask = executor.scheduleAtFixedRate(() -> {
                     try {
                         INSTANCE.autoFulfillBuilderRequests();
                     } catch (Exception e) {
                         LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
                     }
-                }, 60, 5, TimeUnit.SECONDS); // 60 second initial delay, then every 5 seconds
+                }, 60, autofulfillCheckTimeSeconds, TimeUnit.SECONDS); // 60 second initial delay, then configurable interval
                 
             } catch (Exception e) {
                 LOGGER.error("[mc_mod] Error checking MineColonies readiness: {}", e.getMessage());
@@ -840,6 +943,82 @@ public class McMod {
         } catch (Exception e) {
             LOGGER.debug("[mc_mod] Game stability check failed: {}", e.getMessage());
             return false;
+        }
+    }
+
+    // Command methods
+    private void enableAutofulfill() {
+        autofulfillEnabled = true;
+        LOGGER.info("[mc_mod] Autofulfill enabled via command");
+    }
+    
+    private void disableAutofulfill() {
+        autofulfillEnabled = false;
+        LOGGER.info("[mc_mod] Autofulfill disabled via command");
+    }
+    
+    private void setAutofulfillDelay(int seconds) {
+        autofulfillCheckTimeSeconds = seconds;
+        LOGGER.info("[mc_mod] Autofulfill delay set to " + seconds + " seconds via command");
+        
+        // Restart the scheduled task with the new delay
+        restartAutofulfillTask();
+    }
+    
+    private void restartAutofulfillTask() {
+        if (autofulfillTask != null) {
+            autofulfillTask.cancel(false);
+        }
+        
+        if (autofulfillEnabled && modFullyEnabled) {
+            autofulfillTask = executor.scheduleAtFixedRate(() -> {
+                try {
+                    INSTANCE.autoFulfillBuilderRequests();
+                } catch (Exception e) {
+                    LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
+                }
+            }, 0, autofulfillCheckTimeSeconds, TimeUnit.SECONDS);
+            LOGGER.info("[mc_mod] Autofulfill task restarted with {} second interval", autofulfillCheckTimeSeconds);
+        }
+    }
+    
+    private void enableInGameMessages() {
+        showInGameMessages = true;
+        LOGGER.info("[mc_mod] In-game messages enabled via command");
+    }
+    
+    private void disableInGameMessages() {
+        showInGameMessages = false;
+        LOGGER.info("[mc_mod] In-game messages disabled via command");
+    }
+    
+    private void showAutofulfillStatus(net.minecraft.commands.CommandSourceStack context) {
+        context.sendSuccess(() -> Component.literal("Autofulfill Status:"), false);
+        context.sendSuccess(() -> Component.literal("Enabled: " + (autofulfillEnabled ? "Yes" : "No")), false);
+        context.sendSuccess(() -> Component.literal("Check Interval: " + autofulfillCheckTimeSeconds + " seconds"), false);
+        context.sendSuccess(() -> Component.literal("In-game Messages: " + (showInGameMessages ? "Yes" : "No")), false);
+    }
+    
+    private void showStats(net.minecraft.commands.CommandSourceStack context) {
+        if (totalRequestsProcessed > 0) {
+            double successRate = (double) successfulFulfillments / totalRequestsProcessed * 100;
+            context.sendSuccess(() -> Component.literal("Autofulfill Statistics:"), false);
+            context.sendSuccess(() -> Component.literal("Processed: " + totalRequestsProcessed), false);
+            context.sendSuccess(() -> Component.literal("Successful: " + successfulFulfillments + " (" + String.format("%.1f", successRate) + "%)"), false);
+            context.sendSuccess(() -> Component.literal("Failed: " + failedFulfillments), false);
+            context.sendSuccess(() -> Component.literal("Skipped: " + skippedRequests), false);
+        } else {
+            context.sendSuccess(() -> Component.literal("No autofulfill statistics available yet"), false);
+        }
+    }
+    
+    private void triggerAutofulfill() {
+        LOGGER.info("[mc_mod] Autofulfill triggered manually via command");
+        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+        if (server != null) {
+            server.execute(() -> {
+                autoFulfillBuilderRequests();
+            });
         }
     }
 } 

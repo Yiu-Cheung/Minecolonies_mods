@@ -1,0 +1,12 @@
+# MC Mod Configuration File
+# This file is auto-generated. You can modify these settings.
+
+[autofulfill]
+# Enable or disable autofulfill feature
+enabled = true
+
+# Interval in seconds for autofulfill checks (1-3600)
+checkTimeSeconds = 5
+
+# Show in-game messages for autofulfill actions
+showInGameMessages = true 
