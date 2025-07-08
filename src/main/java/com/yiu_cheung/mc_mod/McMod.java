@@ -363,7 +363,7 @@ public class McMod {
             // Check if the requestable implements IDeliverable
             Class<?> deliverableClass = Class.forName("com.minecolonies.api.colony.requestsystem.requestable.IDeliverable");
             return deliverableClass.isInstance(requestable);
-        } catch (Exception e) {
+            } catch (Exception e) {
             log("[mc_mod] Exception checking if requestable is deliverable: " + e);
             return false;
         }
@@ -453,7 +453,7 @@ public class McMod {
                 failedFulfillments++;
             }
             
-        } catch (Exception e) {
+                    } catch (Exception e) {
             log("[mc_mod] Exception in fulfillRequestWithCreativeResolve: " + e);
             sendServerMessage("Error fulfilling request: " + e.getMessage(), "ERROR");
             failedFulfillments++;
@@ -492,9 +492,9 @@ public class McMod {
                     method.getParameterCount() == 2 &&
                     method.getParameterTypes()[1] == itemStackClass) {
                     targetMethod = method;
-                    break;
-                }
-            }
+                                    break;
+                                }
+                            }
             
             if (targetMethod == null) {
                 log("[mc_mod] Could not find addItemStackToItemHandlerWithResult method");
@@ -505,7 +505,7 @@ public class McMod {
             
             log("[mc_mod] InventoryUtils.addItemStackToItemHandlerWithResult returned: " + (result != null ? result.getClass().getName() : "null"));
             return result;
-        } catch (Exception e) {
+                        } catch (Exception e) {
             log("[mc_mod] Exception adding item to citizen inventory: " + e.getMessage());
             log("[mc_mod] Exception stack trace: " + e.toString());
             return null;
@@ -546,7 +546,7 @@ public class McMod {
                 }
             }
             return null;
-        } catch (Exception e) {
+            } catch (Exception e) {
             log("[mc_mod] Exception getting request state: " + e);
             return null;
         }
@@ -600,9 +600,9 @@ public class McMod {
                 log("[mc_mod] Exception getting building using official method: " + e);
             }
             
-            if (building != null) {
+                    if (building != null) {
                 log("[mc_mod] Found building using official method: " + building.getClass().getSimpleName());
-                return building;
+                            return building;
             }
         } catch (Exception e) {
             log("[mc_mod] Exception in getBuildingOfficial: " + e);
@@ -631,7 +631,7 @@ public class McMod {
             
             if (!isIBuilding && !isAbstractBuilding) {
                 log("[mc_mod] Building is not an IBuilding or AbstractBuilding: " + building.getClass().getName());
-                return null;
+            return null;
             }
             
             // First try to get citizen for the specific request
