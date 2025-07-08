@@ -1,0 +1,14 @@
+{
+  "itemGroup.mc_mod": "MC Mod - Auto-Fulfill Builder Requests",
+  "mc_mod.config.enable_auto_fulfill_builder_requests": "Enable Auto-Fulfill Builder Requests",
+  "mc_mod.config.enable_auto_fulfill_builder_requests.tooltip": "Automatically fulfill builder requests in MineColonies",
+  "mc_mod.message.minecolonies_not_found": "MineColonies mod not found. Auto-fulfill will be disabled.",
+  "mc_mod.message.minecolonies_found": "MineColonies detected. Auto-fulfill system will be active.",
+  "mc_mod.message.builder_request_fulfilled": "Auto-fulfilled builder request for %s",
+  "mc_mod.command.status": "Check auto-fulfill status",
+  "mc_mod.command.enable": "Enable auto-fulfill",
+  "mc_mod.command.disable": "Disable auto-fulfill",
+  "mc_mod.message.enabled": "Auto-fulfill builder requests enabled.",
+  "mc_mod.message.disabled": "Auto-fulfill builder requests disabled.",
+  "mc_mod.message.status": "Auto-fulfill builder requests: %s"
+} 
