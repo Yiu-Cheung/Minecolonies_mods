@@ -26,12 +26,27 @@ import net.neoforged.neoforge.event.RegisterCommandsEvent;
 import net.neoforged.neoforge.common.NeoForge;
 import net.minecraft.core.BlockPos;
 import java.util.Collections;
+import java.util.HashMap;
 
 @Mod("mc_mod")
 public class McMod {
     public static final Logger LOGGER = LogManager.getLogger("mc_mod");
     public static final ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
     public static McMod INSTANCE;
+
+    // Message tracking and statistics
+    private static final Map<String, Long> lastMessageTime = new HashMap<>();
+    private static final Map<String, Integer> messageCount = new HashMap<>();
+    private static final int MESSAGE_COOLDOWN_MS = 10000; // 10 seconds between similar messages
+    private static final int MAX_MESSAGES_PER_TYPE = 3; // Max messages per type per session
+    
+    // Autofulfill statistics
+    private static int totalRequestsProcessed = 0;
+    private static int successfulFulfillments = 0;
+    private static int failedFulfillments = 0;
+    private static int skippedRequests = 0;
+    private static long lastStatsReset = System.currentTimeMillis();
+    private static final long STATS_RESET_INTERVAL = 300000; // 5 minutes
 
     public McMod() {
         LOGGER.info("MC Mod - Auto-Fulfill Builder Requests initialized!");
@@ -69,6 +84,10 @@ public class McMod {
     }
 
     public static void sendServerMessage(String msg) {
+        sendServerMessage(msg, "INFO");
+    }
+    
+    public static void sendServerMessage(String msg, String type) {
         MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
         if (server == null) {
             LOGGER.debug("[mc_mod] sendServerMessage called but server is null: {}", msg);
@@ -76,22 +95,108 @@ public class McMod {
         }
         if (!server.isSameThread()) {
             LOGGER.debug("[mc_mod] sendServerMessage not on main thread, scheduling on server: {}", msg);
-            server.execute(() -> sendServerMessage(msg));
+            server.execute(() -> sendServerMessage(msg, type));
             return;
         }
-        LOGGER.info("[mc_mod] sendServerMessage: {}", msg);
+        
+        // Check message cooldown and limits
+        if (!shouldSendMessage(msg, type)) {
+            return;
+        }
+        
+        LOGGER.info("[mc_mod] sendServerMessage [{}]: {}", type, msg);
         var playerList = server.getPlayerList().getPlayers();
         if (playerList.isEmpty()) {
             LOGGER.debug("[mc_mod] sendServerMessage: no players online to receive: {}", msg);
+            return;
         }
+        
+        // Format message based on type
+        String formattedMsg = formatMessage(msg, type);
+        
         for (var player : playerList) {
-            player.sendSystemMessage(Component.literal(msg));
-            LOGGER.info("[mc_mod] Sent message to player: {}", player.getName().getString());
+            player.sendSystemMessage(Component.literal(formattedMsg));
+            LOGGER.debug("[mc_mod] Sent message to player: {}", player.getName().getString());
+        }
+    }
+    
+    private static boolean shouldSendMessage(String msg, String type) {
+        String messageKey = type + ":" + msg.hashCode();
+        long currentTime = System.currentTimeMillis();
+        
+        // Check cooldown
+        if (lastMessageTime.containsKey(messageKey)) {
+            if (currentTime - lastMessageTime.get(messageKey) < MESSAGE_COOLDOWN_MS) {
+                return false;
+            }
+        }
+        
+        // Check message limit
+        int count = messageCount.getOrDefault(messageKey, 0);
+        if (count >= MAX_MESSAGES_PER_TYPE) {
+            return false;
+        }
+        
+        // Update tracking
+        lastMessageTime.put(messageKey, currentTime);
+        messageCount.put(messageKey, count + 1);
+        return true;
+    }
+    
+    private static String formatMessage(String msg, String type) {
+        String prefix = "";
+        switch (type.toUpperCase()) {
+            case "SUCCESS":
+                prefix = "§a[✓] "; // Green checkmark
+                break;
+            case "ERROR":
+                prefix = "§c[✗] "; // Red X
+                break;
+            case "WARNING":
+                prefix = "§e[⚠] "; // Yellow warning
+                break;
+            case "INFO":
+                prefix = "§b[ℹ] "; // Blue info
+                break;
+            case "PROGRESS":
+                prefix = "§6[→] "; // Gold arrow
+                break;
+            case "STATS":
+                prefix = "§d[📊] "; // Purple stats
+                break;
+            default:
+                prefix = "§7[?] "; // Gray question mark
+        }
+        return prefix + msg;
+    }
+    
+    private static void resetStats() {
+        long currentTime = System.currentTimeMillis();
+        if (currentTime - lastStatsReset > STATS_RESET_INTERVAL) {
+            totalRequestsProcessed = 0;
+            successfulFulfillments = 0;
+            failedFulfillments = 0;
+            skippedRequests = 0;
+            lastStatsReset = currentTime;
+            lastMessageTime.clear();
+            messageCount.clear();
+        }
+    }
+    
+    private static void sendStatsMessage() {
+        if (totalRequestsProcessed > 0) {
+            double successRate = (double) successfulFulfillments / totalRequestsProcessed * 100;
+            String statsMsg = String.format("Autofulfill Stats: %d processed, %d successful (%.1f%%), %d failed, %d skipped", 
+                totalRequestsProcessed, successfulFulfillments, successRate, failedFulfillments, skippedRequests);
+            sendServerMessage(statsMsg, "STATS");
         }
     }
     
     public void autoFulfillBuilderRequests() {
         try {
+            // Reset stats periodically
+            resetStats();
+            
             // Step 1: Get IMinecoloniesAPI instance
             Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
             Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
@@ -105,12 +210,26 @@ public class McMod {
             Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
             LOGGER.debug("[mc_mod] Colonies: {}", colonies);
 
+            int colonyCount = 0;
             for (Object colony : (Iterable<?>) colonies) {
+                colonyCount++;
                 LOGGER.debug("[mc_mod] Processing colony: {}", colony);
                 processColonyRequests(colony);
             }
+            
+            // Send progress message
+            if (colonyCount > 0) {
+                sendServerMessage("Processed " + colonyCount + " colonies for autofulfill", "PROGRESS");
+            }
+            
+            // Send stats every 10 cycles (about 50 seconds)
+            if (totalRequestsProcessed > 0 && totalRequestsProcessed % 10 == 0) {
+                sendStatsMessage();
+            }
+            
         } catch (Exception e) {
             LOGGER.error("[mc_mod] Error in autoFulfillBuilderRequests: {}", e.getMessage(), e);
+            sendServerMessage("Autofulfill error: " + e.getMessage(), "ERROR");
         }
     }
     
@@ -158,6 +277,8 @@ public class McMod {
     
     private void processRequest(Object request, Object colony) {
         try {
+            totalRequestsProcessed++;
+            
             // Get the requester and building
             Object requester = null;
             try {
@@ -167,6 +288,7 @@ public class McMod {
             }
             if (requester == null) {
                 log("[mc_mod] Skipping request: requester is null for request " + request.getClass().getName());
+                skippedRequests++;
                 return;
             }
             
@@ -174,6 +296,7 @@ public class McMod {
             Class<?> buildingBasedRequesterClass = Class.forName("com.minecolonies.core.colony.requestsystem.requesters.BuildingBasedRequester");
             if (!buildingBasedRequesterClass.isInstance(requester)) {
                 log("[mc_mod] Skipping request: requester is not BuildingBasedRequester (" + requester.getClass().getName() + ")");
+                skippedRequests++;
                 return;
             }
             
@@ -181,6 +304,7 @@ public class McMod {
             Object building = getBuildingOfficial(requester, colony, request);
             if (building == null) {
                 log("[mc_mod] Skipping request: building is null for requester " + requester.getClass().getName());
+                skippedRequests++;
                 return;
             }
             
@@ -201,6 +325,7 @@ public class McMod {
             Object requestable = request.getClass().getMethod("getRequest").invoke(request);
             if (!isDeliverable(requestable)) {
                 log("[mc_mod] Skipping request: not deliverable");
+                skippedRequests++;
                 return;
             }
             
@@ -209,6 +334,7 @@ public class McMod {
             
         } catch (Exception e) {
             log("[mc_mod] Exception in processRequest: " + e);
+            failedFulfillments++;
         }
     }
     
@@ -233,6 +359,8 @@ public class McMod {
             
             if (citizen == null) {
                 log("[mc_mod] No citizen found for request, cannot fulfill");
+                sendServerMessage("No citizen assigned for request", "WARNING");
+                failedFulfillments++;
                 return;
             }
             
@@ -240,6 +368,8 @@ public class McMod {
             List<Object> displayStacks = getDisplayStacks(request);
             if (displayStacks == null || displayStacks.isEmpty()) {
                 log("[mc_mod] No display stacks found for request");
+                sendServerMessage("No items found for request", "WARNING");
+                failedFulfillments++;
                 return;
             }
             
@@ -252,6 +382,23 @@ public class McMod {
             int maxStackSize = (int) stackCopy.getClass().getMethod("getMaxStackSize").invoke(stackCopy);
             int finalCount = Math.min(count, maxStackSize);
             stackCopy.getClass().getMethod("setCount", int.class).invoke(stackCopy, finalCount);
+            
+            // Get item name for better messaging
+            String itemName = "Unknown Item";
+            try {
+                Object item = stackCopy.getClass().getMethod("getItem").invoke(stackCopy);
+                itemName = item.getClass().getMethod("getDescriptionId").invoke(item).toString();
+                // Clean up the item name
+                if (itemName.startsWith("item.")) {
+                    itemName = itemName.substring(5);
+                }
+                if (itemName.startsWith("block.")) {
+                    itemName = itemName.substring(6);
+                }
+                itemName = itemName.replace("minecraft.", "").replace("minecolonies.", "");
+            } catch (Exception e) {
+                log("[mc_mod] Could not get item name: " + e.getMessage());
+            }
             
             // Add the items to the citizen's inventory using official method
             Object remainingItemStack = addItemToCitizenInventoryOfficial(citizen, stackCopy);
@@ -273,19 +420,23 @@ public class McMod {
                     .invoke(requestManager, requestId, getRequestState("RESOLVED"));
                 
                 log("[mc_mod] Successfully fulfilled request with creative resolve");
-                sendServerMessage("[mc_mod] Autofulfill: Successfully fulfilled builder request");
+                String buildingName = building.getClass().getSimpleName().replace("Building", "");
+                sendServerMessage("Fulfilled " + finalCount + "x " + itemName + " for " + buildingName, "SUCCESS");
+                successfulFulfillments++;
             } else {
                 log("[mc_mod] Could not add all items to inventory, request not resolved");
                 log("[mc_mod] Remaining item stack is null: " + (remainingItemStack == null));
                 if (remainingItemStack != null) {
                     log("[mc_mod] Remaining item stack is empty: " + isItemStackEmpty(remainingItemStack));
                 }
-                sendServerMessage("[mc_mod] Autofulfill: Could not add all items to inventory");
+                sendServerMessage("Could not add " + finalCount + "x " + itemName + " to inventory", "ERROR");
+                failedFulfillments++;
             }
             
         } catch (Exception e) {
             log("[mc_mod] Exception in fulfillRequestWithCreativeResolve: " + e);
-            sendServerMessage("[mc_mod] Autofulfill: Error fulfilling request: " + e.getMessage());
+            sendServerMessage("Error fulfilling request: " + e.getMessage(), "ERROR");
+            failedFulfillments++;
         }
     }
     
@@ -502,9 +653,45 @@ public class McMod {
             Commands.literal("mcmod")
                 .requires(source -> source.hasPermission(0))
                 .executes(ctx -> {
-                    ctx.getSource().sendSuccess(() -> Component.literal("[mc_mod] /mcmod command executed!"), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§b[ℹ] mc_mod commands:"), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§6/autofulfill §7- Toggle autofulfill"), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§6/stats §7- Show autofulfill statistics"), false);
+                    ctx.getSource().sendSuccess(() -> Component.literal("§6/trigger §7- Manually trigger autofulfill"), false);
                     return 1;
                 })
+                .then(Commands.literal("autofulfill")
+                    .executes(ctx -> {
+                        // Toggle autofulfill (placeholder for future implementation)
+                        ctx.getSource().sendSuccess(() -> Component.literal("§a[✓] Autofulfill is currently running"), false);
+                        return 1;
+                    }))
+                .then(Commands.literal("stats")
+                    .executes(ctx -> {
+                        if (totalRequestsProcessed > 0) {
+                            double successRate = (double) successfulFulfillments / totalRequestsProcessed * 100;
+                            ctx.getSource().sendSuccess(() -> Component.literal("§d[📊] Autofulfill Statistics:"), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§7Processed: §f%d", totalRequestsProcessed)), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§aSuccessful: §f%d (%.1f%%)", successfulFulfillments, successRate)), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§cFailed: §f%d", failedFulfillments)), false);
+                            ctx.getSource().sendSuccess(() -> Component.literal(String.format("§eSkipped: §f%d", skippedRequests)), false);
+                        } else {
+                            ctx.getSource().sendSuccess(() -> Component.literal("§e[⚠] No autofulfill statistics available yet"), false);
+                        }
+                        return 1;
+                    }))
+                .then(Commands.literal("trigger")
+                    .executes(ctx -> {
+                        ctx.getSource().sendSuccess(() -> Component.literal("§6[→] Manually triggering autofulfill..."), false);
+                        // Execute autofulfill on the server thread
+                        MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+                        if (server != null) {
+                            server.execute(() -> {
+                                autoFulfillBuilderRequests();
+                                ctx.getSource().sendSuccess(() -> Component.literal("§a[✓] Autofulfill completed"), false);
+                            });
+                        }
+                        return 1;
+                    }))
         );
     }
 
