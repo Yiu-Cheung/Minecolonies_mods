@@ -33,6 +33,10 @@ public class McMod {
     public static final Logger LOGGER = LogManager.getLogger("mc_mod");
     public static final ScheduledExecutorService executor = Executors.newScheduledThreadPool(1);
     public static McMod INSTANCE;
+    
+    // Startup safety flag
+    private static boolean modFullyEnabled = false;
+    private static long modStartTime = 0;
 
     // Message tracking and statistics
     private static final Map<String, Long> lastMessageTime = new HashMap<>();
@@ -178,36 +182,53 @@ public class McMod {
     
     public void autoFulfillBuilderRequests() {
         try {
-            // Reset stats periodically
-            resetStats();
+            // Check if mod is fully enabled
+            if (!modFullyEnabled) {
+                LOGGER.debug("[mc_mod] Mod not fully enabled yet, skipping autofulfill cycle");
+                return;
+            }
             
-            // Step 1: Get IMinecoloniesAPI instance with safety check
+            // Additional safety check: ensure we're not interfering with MineColonies' data sync
+            if (!isGameFullyStable()) {
+                LOGGER.debug("[mc_mod] Game not fully stable, skipping autofulfill cycle");
+                return;
+            }
+            
+            // Get the MineColonies API
             Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
             Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
             
             if (apiInstance == null) {
-                LOGGER.debug("[mc_mod] MineColonies API not ready, skipping autofulfill cycle");
+                LOGGER.warn("[mc_mod] MineColonies API not available, skipping autofulfill cycle");
                 return;
             }
             
-            LOGGER.debug("[mc_mod] IMinecoloniesAPI instance: {}", apiInstance);
-
-            // Step 2: Get ColonyManager with safety check
+            // Get the colony manager
             Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
-            
             if (colonyManager == null) {
-                LOGGER.debug("[mc_mod] MineColonies ColonyManager not ready, skipping autofulfill cycle");
+                LOGGER.warn("[mc_mod] Colony manager not available, skipping autofulfill cycle");
                 return;
             }
             
-            LOGGER.debug("[mc_mod] ColonyManager: {}", colonyManager);
-
-            // Step 3: Get all colonies
+            // Get all colonies
             Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
-            LOGGER.debug("[mc_mod] Colonies: {}", colonies);
-
+            if (colonies == null) {
+                LOGGER.warn("[mc_mod] No colonies available, skipping autofulfill cycle");
+                return;
+            }
+            
+            // Convert to collection and process
+            Collection<?> colonyCollection = (Collection<?>) colonies;
+            if (colonyCollection.isEmpty()) {
+                LOGGER.debug("[mc_mod] No colonies found, skipping autofulfill cycle");
+                return;
+            }
+            
+            // Reset stats periodically
+            resetStats();
+            
             int colonyCount = 0;
-            for (Object colony : (Iterable<?>) colonies) {
+            for (Object colony : colonyCollection) {
                 colonyCount++;
                 LOGGER.debug("[mc_mod] Processing colony: {}", colony);
                 processColonyRequests(colony);
@@ -696,51 +717,129 @@ public class McMod {
 
     // Remove @SubscribeEvent from onServerStarted, and register via event bus instead
     public static void onServerStarted(ServerStartedEvent event) {
-        LOGGER.info("[mc_mod] ServerStartedEvent received, waiting for MineColonies to be ready...");
+        LOGGER.info("[mc_mod] ServerStartedEvent received, waiting for game to be fully stable...");
         
-        // Wait a bit for MineColonies to fully initialize
+        // Set startup time and disable mod initially
+        modStartTime = System.currentTimeMillis();
+        modFullyEnabled = false;
+        
+        // Wait much longer for the game to be fully stable and MineColonies to complete all initialization
         executor.schedule(() -> {
             try {
+                LOGGER.info("[mc_mod] Starting MineColonies readiness check...");
+                
                 // Check if MineColonies is ready
                 Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
                 Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
                 
                 if (apiInstance == null) {
-                    LOGGER.warn("[mc_mod] MineColonies API not ready yet, retrying in 10 seconds...");
-                    executor.schedule(() -> onServerStarted(event), 10, TimeUnit.SECONDS);
+                    LOGGER.warn("[mc_mod] MineColonies API not ready yet, retrying in 30 seconds...");
+                    executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
                     return;
                 }
                 
                 // Check if colony manager is available
                 Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
                 if (colonyManager == null) {
-                    LOGGER.warn("[mc_mod] MineColonies ColonyManager not ready yet, retrying in 10 seconds...");
-                    executor.schedule(() -> onServerStarted(event), 10, TimeUnit.SECONDS);
+                    LOGGER.warn("[mc_mod] MineColonies ColonyManager not ready yet, retrying in 30 seconds...");
+                    executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
                     return;
                 }
                 
-                LOGGER.info("[mc_mod] MineColonies is ready, starting auto-fulfill poller");
+                // Additional check: try to get colonies to ensure everything is fully loaded
+                try {
+                    Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
+                    if (colonies == null) {
+                        LOGGER.warn("[mc_mod] MineColonies colonies not ready yet, retrying in 30 seconds...");
+                        executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
+                        return;
+                    }
+                } catch (Exception e) {
+                    LOGGER.warn("[mc_mod] MineColonies colonies not ready yet, retrying in 30 seconds... Error: {}", e.getMessage());
+                    executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
+                    return;
+                }
+                
+                LOGGER.info("[mc_mod] MineColonies is fully ready, starting auto-fulfill poller");
                 sendServerMessage("Autofulfill system started", "INFO");
                 
-                // Start the autofulfill poller with a longer initial delay
+                // Enable the mod
+                modFullyEnabled = true;
+                
+                // Start the autofulfill poller with a much longer initial delay
                 executor.scheduleAtFixedRate(() -> {
                     try {
                         INSTANCE.autoFulfillBuilderRequests();
                     } catch (Exception e) {
                         LOGGER.error("[mc_mod] Error in autofulfill cycle: {}", e.getMessage());
                     }
-                }, 30, 5, TimeUnit.SECONDS); // 30 second initial delay, then every 5 seconds
+                }, 60, 5, TimeUnit.SECONDS); // 60 second initial delay, then every 5 seconds
                 
             } catch (Exception e) {
                 LOGGER.error("[mc_mod] Error checking MineColonies readiness: {}", e.getMessage());
-                // Retry after 30 seconds if there's an error
-                executor.schedule(() -> onServerStarted(event), 30, TimeUnit.SECONDS);
+                // Retry after 60 seconds if there's an error
+                executor.schedule(() -> onServerStarted(event), 60, TimeUnit.SECONDS);
             }
-        }, 10, TimeUnit.SECONDS); // Wait 10 seconds before first check
+        }, 120, TimeUnit.SECONDS); // Wait 120 seconds (2 minutes) before first check
     }
 
     // Replace log() to use debug for routine messages
     private static void log(String msg) {
         LOGGER.debug(msg);
+    }
+
+    private boolean isGameFullyStable() {
+        try {
+            // Check if enough time has passed since server start
+            long currentTime = System.currentTimeMillis();
+            long timeSinceStart = currentTime - modStartTime;
+            if (timeSinceStart < 120000) { // 2 minutes
+                LOGGER.debug("[mc_mod] Not enough time passed since server start: {} ms", timeSinceStart);
+                return false;
+            }
+            
+            // Check if MineColonies API is available and stable
+            Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
+            Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
+            
+            if (apiInstance == null) {
+                return false;
+            }
+            
+            // Check if colony manager is available
+            Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
+            if (colonyManager == null) {
+                return false;
+            }
+            
+            // Check if colonies are loaded and stable
+            Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
+            if (colonies == null) {
+                return false;
+            }
+            
+            // Simple check: if we can access colonies without error, the system is stable
+            Collection<?> colonyCollection = (Collection<?>) colonies;
+            
+            // Additional safety: check if we can access a basic colony method without error
+            if (!colonyCollection.isEmpty()) {
+                Object firstColony = colonyCollection.iterator().next();
+                // Try to access a basic method to ensure colony is fully loaded
+                try {
+                    Object colonyId = firstColony.getClass().getMethod("getID").invoke(firstColony);
+                    if (colonyId == null) {
+                        return false;
+                    }
+                } catch (Exception e) {
+                    // If we can't access basic colony data, it might not be fully loaded
+                    return false;
+                }
+            }
+            
+            return true;
+        } catch (Exception e) {
+            LOGGER.debug("[mc_mod] Game stability check failed: {}", e.getMessage());
+            return false;
+        }
     }
 } 
