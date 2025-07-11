@@ -29,6 +29,8 @@ import net.minecraft.core.BlockPos;
 import java.util.Collections;
 import java.util.HashMap;
 import java.io.File;
+import com.mojang.brigadier.arguments.StringArgumentType;
+import java.util.Arrays;
 
 
 @Mod("mc_mod")
@@ -77,6 +79,9 @@ public class McMod {
         
         // Don't start background thread here - wait for server to be ready
         LOGGER.info("[mc_mod] Mod initialized, waiting for server to start...");
+        
+        // TEMP: Log all assigned requests on mod load for testing
+        RequestLogger.logAllAssignedRequests();
     }
 
     private void loadConfig() {
@@ -333,129 +338,118 @@ public class McMod {
     
     private void processColonyRequests(Object colony) {
         try {
-            // Get the request manager
+            // Use direct approach like fulfillAllRequestsNoFilter
             Object requestManager = colony.getClass().getMethod("getRequestManager").invoke(colony);
-            
-            // Get all requests by iterating through all buildings and getting their requests
-            Object buildingManager = colony.getClass().getMethod("getBuildingManager").invoke(colony);
-            Map<?, ?> buildingsMap = (Map<?, ?>) buildingManager.getClass().getMethod("getBuildings").invoke(buildingManager);
-            
-            // Get all requesters (buildings) and their requests
-            for (Object building : buildingsMap.values()) {
-                processRequestsForBuilding(building, colony, requestManager);
+            if (requestManager == null) {
+                log("[mc_mod] Request manager is null for colony");
+                return;
             }
+            
+            // Get resolvers
+            Object playerResolver = requestManager.getClass().getMethod("getPlayerResolver").invoke(requestManager);
+            Object retryingResolver = requestManager.getClass().getMethod("getRetryingRequestResolver").invoke(requestManager);
+            
+            // Get all assigned tokens
+            Collection<?> playerTokens = (Collection<?>) playerResolver.getClass().getMethod("getAllAssignedRequests").invoke(playerResolver);
+            Collection<?> retryingTokens = (Collection<?>) retryingResolver.getClass().getMethod("getAllAssignedRequests").invoke(retryingResolver);
+            
+            Set<Object> allTokens = new HashSet<>();
+            if (playerTokens != null) allTokens.addAll(playerTokens);
+            if (retryingTokens != null) allTokens.addAll(retryingTokens);
+            
+            if (allTokens.isEmpty()) {
+                log("[mc_mod] No assigned tokens found for colony");
+                return;
+            }
+            
+            // Process each token/request
+            Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
+            for (Object token : allTokens) {
+                Object request = requestManager.getClass().getMethod("getRequestForToken", iTokenClass).invoke(requestManager, token);
+                if (request == null) continue;
+                
+                // Process the request with our new direct approach
+                processRequest(request, colony);
+            }
+            
         } catch (Exception e) {
             LOGGER.error("[mc_mod] Error processing colony requests: {}", e.getMessage(), e);
         }
     }
     
-    private void processRequestsForBuilding(Object building, Object colony, Object requestManager) {
-        try {
-            // Check if building is a requester
-            Class<?> iRequesterClass = Class.forName("com.minecolonies.api.colony.requestsystem.requester.IRequester");
-            if (!iRequesterClass.isInstance(building)) {
-                return;
-            }
-            
-            // Get requests made by this building
-            Object requestHandler = requestManager.getClass().getMethod("getRequestHandler").invoke(requestManager);
-            Collection<?> requests = (Collection<?>) requestHandler.getClass()
-                .getMethod("getRequestsMadeByRequester", iRequesterClass)
-                .invoke(requestHandler, building);
-            
-            if (requests != null) {
-                for (Object request : requests) {
-                    processRequest(request, colony);
-                }
-            }
-        } catch (Exception e) {
-            LOGGER.debug("[mc_mod] Error processing requests for building: {}", e.getMessage());
-        }
-    }
-    
     private void processRequest(Object request, Object colony) {
+        // Use direct approach like fulfillAllRequestsNoFilter but with filters
         try {
             totalRequestsProcessed++;
             
-            // Get the requester and building
-            Object requester = null;
-            try {
-                requester = request.getClass().getMethod("getRequester").invoke(request);
-            } catch (Exception e) {
-                log("[mc_mod] Exception getting requester: " + e + " for request " + request.getClass().getName());
-            }
-            if (requester == null) {
-                log("[mc_mod] Skipping request: requester is null for request " + request.getClass().getName());
-                skippedRequests++;
-                return;
-            }
-            
-            // Check if requester is BuildingBasedRequester (like official logic)
-            Class<?> buildingBasedRequesterClass = Class.forName("com.minecolonies.core.colony.requestsystem.requesters.BuildingBasedRequester");
-            if (!buildingBasedRequesterClass.isInstance(requester)) {
-                log("[mc_mod] Skipping request: requester is not BuildingBasedRequester (" + requester.getClass().getName() + ")");
-                skippedRequests++;
-                return;
-            }
-            
-            // Try to get the building for this request using official method
-            Object building = getBuildingOfficial(requester, colony, request);
-            if (building == null) {
-                log("[mc_mod] Skipping request: building is null for requester " + requester.getClass().getName());
-                skippedRequests++;
-                return;
-            }
-            
-            String buildingClassName = building.getClass().getSimpleName();
-            String requestClassName = request.getClass().getName();
-            
-            // Process all buildings, not just builder buildings (for testing)
-            log("[mc_mod] Found request for building: " + buildingClassName + " - " + requestClassName);
-
-            // Get the request state for logging
+            // Get the request state for filtering
             Object state = request.getClass().getMethod("getState").invoke(request);
             String stateName = state.toString();
-
-            // Get the request ID (needed for resolver lookup)
+            
+            // Get the request ID for resolver lookup
             Object requestId = request.getClass().getMethod("getId").invoke(request);
-
-            // Get the citizen for this request (for message)
-            Object citizen = getCitizenForRequest(building, request);
-            String citizenName = "Unknown";
-            if (citizen != null) {
-                try {
-                    citizenName = (String) citizen.getClass().getMethod("getName").invoke(citizen);
-                } catch (Exception e) {
-                    log("[mc_mod] Could not get citizen name: " + e.getMessage());
-                }
-            }
-
-            // Get the resolver for this request (for message)
+            
+            // Get the resolver for filtering
             String resolverName = "Unknown";
-            boolean allowedResolver = false;
             try {
                 Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
                 Object requestManager = colony.getClass().getMethod("getRequestManager").invoke(colony);
                 Object resolver = requestManager.getClass().getMethod("getResolverForRequest", iTokenClass).invoke(requestManager, requestId);
                 if (resolver != null) {
                     resolverName = resolver.getClass().getSimpleName();
-                    if ("StandardPlayerRequestResolver".equals(resolverName) || "StandardRetryingRequestResolver".equals(resolverName)) {
-                        allowedResolver = true;
-                    }
                 }
             } catch (Exception e) {
-                log("[mc_mod] Could not get resolver name: " + e.getMessage());
+                log("[mc_mod][processRequest] Could not get resolver name: " + e.getMessage());
             }
-
-            // Get the display stacks to know what items to give (like official logic)
+            
+            // Apply filters: state must be IN_PROGRESS or FOLLOWUP_IN_PROGRESS
+            // and resolver must be StandardPlayerRequestResolver or StandardRetryingRequestResolver
+            boolean isActiveState = "IN_PROGRESS".equals(stateName) || "FOLLOWUP_IN_PROGRESS".equals(stateName);
+            boolean isAllowedResolver = "StandardPlayerRequestResolver".equals(resolverName) || "StandardRetryingRequestResolver".equals(resolverName);
+            
+            if (!isActiveState || !isAllowedResolver) {
+                log("[mc_mod][processRequest] Skipped request: state or resolver not allowed. state=" + stateName + ", resolver=" + resolverName);
+                skippedRequests++;
+                return;
+            }
+            
+            // Get the requester and building
+            Object requester = request.getClass().getMethod("getRequester").invoke(request);
+            if (requester == null) {
+                log("[mc_mod][processRequest] Skipping request: requester is null");
+                skippedRequests++;
+                return;
+            }
+            
+            // Get the building for this request
+            Object building = getBuildingOfficial(requester, colony, request);
+            if (building == null) {
+                log("[mc_mod][processRequest] Skipping request: building is null");
+                skippedRequests++;
+                return;
+            }
+            
+            // Get the citizen for this request
+            Object citizen = getCitizenForRequest(building, request);
+            String citizenName = "Unknown";
+            if (citizen != null) {
+                try {
+                    citizenName = (String) citizen.getClass().getMethod("getName").invoke(citizen);
+                } catch (Exception e) {
+                    log("[mc_mod][processRequest] Could not get citizen name: " + e.getMessage());
+                }
+            }
+            
+            // Get the requestable and item information
+            Object requestable = request.getClass().getMethod("getRequest").invoke(request);
             List<Object> displayStacks = getDisplayStacks(request);
             String itemName = "Unknown Item";
             int finalCount = 1;
+            
             if (displayStacks != null && !displayStacks.isEmpty()) {
                 try {
                     Object itemStack = displayStacks.get(0);
                     Object stackCopy = itemStack.getClass().getMethod("copy").invoke(itemStack);
-                    Object requestable = request.getClass().getMethod("getRequest").invoke(request);
                     int count = getRequestCount(requestable);
                     int maxStackSize = (int) stackCopy.getClass().getMethod("getMaxStackSize").invoke(stackCopy);
                     finalCount = Math.min(count, maxStackSize);
@@ -465,53 +459,23 @@ public class McMod {
                     if (itemName.startsWith("block.")) itemName = itemName.substring(6);
                     itemName = itemName.replace("minecraft.", "").replace("minecolonies.", "");
                 } catch (Exception e) {
-                    log("[mc_mod] Could not get item name: " + e.getMessage());
+                    log("[mc_mod][processRequest] Could not get item name: " + e.getMessage());
                 }
             }
-
-            // Only show message for allowed resolvers in correct states
-            if (("IN_PROGRESS".equals(stateName) || "FOLLOWUP_IN_PROGRESS".equals(stateName)) && allowedResolver) {
-                log("[mc_mod] Found request: " + finalCount + "x " + itemName + " for " + buildingClassName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")");
-                // sendServerMessage("Found request: ...", "INFO"); // No longer show in-game
-            }
             
-            // Only ignore requests in COMPLETED, RESOLVED, FAILED, CANCELLED, FOLLOWUP_IN_PROGRESS states
-            if ("COMPLETED".equals(stateName) || "RESOLVED".equals(stateName) || "FAILED".equals(stateName) || "CANCELLED".equals(stateName) || "FOLLOWUP_IN_PROGRESS".equals(stateName)) {
-                log("[mc_mod] Skipping request: state is " + stateName);
-                skippedRequests++;
-                return;
-            }
+            String buildingName = building.getClass().getSimpleName().replace("Building", "");
+            log("[mc_mod][processRequest] About to fulfill request: " + finalCount + "x " + itemName + " for " + buildingName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")");
             
-            // Check if the request is deliverable (like official creative resolve)
-            Object requestable = request.getClass().getMethod("getRequest").invoke(request);
-            // Only fulfill requests in IN_PROGRESS or FOLLOWUP_IN_PROGRESS with StandardPlayerRequestResolver or StandardRetryingRequestResolver
-            boolean shouldFulfill = false;
-            if ("IN_PROGRESS".equals(stateName) || "FOLLOWUP_IN_PROGRESS".equals(stateName)) {
-                try {
-                    Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
-                    Object requestManager = colony.getClass().getMethod("getRequestManager").invoke(colony);
-                    Object resolver = requestManager.getClass().getMethod("getResolverForRequest", iTokenClass).invoke(requestManager, requestId);
-                    if (resolver != null) {
-                        String rName = resolver.getClass().getSimpleName();
-                        if ("StandardPlayerRequestResolver".equals(rName) || "StandardRetryingRequestResolver".equals(rName)) {
-                            shouldFulfill = true;
-                        }
-                    }
-                } catch (Exception e) {
-                    log("[mc_mod] Could not get resolver name: " + e.getMessage());
-                }
-            }
-            if (!shouldFulfill) {
-                log("[mc_mod] Skipping request: state is " + stateName + ", resolver is " + resolverName);
-                skippedRequests++;
-                return;
-            }
+            // Fulfill the request
             fulfillRequestWithCreativeResolve(request, colony, building, requestable, stateName, resolverName);
             
-            } catch (Exception e) {
-            log("[mc_mod] Exception in processRequest: " + e);
+        } catch (Exception e) {
+            log("[mc_mod][processRequest] Exception: " + e);
+            java.io.StringWriter sw = new java.io.StringWriter();
+            e.printStackTrace(new java.io.PrintWriter(sw));
+            log("[mc_mod][processRequest] Stack trace: " + sw.toString());
             failedFulfillments++;
-            }
+        }
     }
     
     private boolean isDeliverable(Object requestable) {
@@ -606,6 +570,8 @@ public class McMod {
                 log("[mc_mod] Successfully fulfilled request with creative resolve");
                 String buildingName = building.getClass().getSimpleName().replace("Building", "");
                 sendServerMessage("Fulfilled " + finalCount + "x " + itemName + " for " + buildingName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")", "SUCCESS");
+                log("Fulfilled " + finalCount + "x " + itemName + " for " + buildingName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")");
+                
                 successfulFulfillments++;
                 } else {
                 log("[mc_mod] Could not add all items to inventory, request not resolved");
@@ -613,7 +579,8 @@ public class McMod {
                 if (remainingItemStack != null) {
                     log("[mc_mod] Remaining item stack is empty: " + isItemStackEmpty(remainingItemStack));
                 }
-                sendServerMessage("Could not add " + finalCount + "x " + itemName + " to inventory", "ERROR");
+                String buildingName = building.getClass().getSimpleName().replace("Building", "");
+                sendServerMessage("Could not add " + finalCount + "x " + itemName + " to inventory for " + buildingName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")", "ERROR");
                 failedFulfillments++;
             }
             
@@ -716,6 +683,30 @@ public class McMod {
         }
     }
     
+    /**
+     * Check if a request state is active and can be fulfilled.
+     * This method determines which request states should be processed.
+     */
+    private boolean isActiveRequestState(String stateName) {
+        // Include more request states to capture more requests
+        // All type status: "IN_PROGRESS", "FOLLOWUP_IN_PROGRESS", "IN_PROGRESS_DELIVERY", 
+        // "FOLLOWUP_IN_PROGRESS_DELIVERY", "IN_PROGRESS_PICKUP", "FOLLOWUP_IN_PROGRESS_PICKUP"
+        return "IN_PROGRESS".equals(stateName) ||
+               "FOLLOWUP_IN_PROGRESS".equals(stateName);
+    }
+    
+    /**
+     * Check if a resolver type is allowed for auto-fulfillment.
+     * This method determines which resolver types should be processed.
+     */
+    private boolean isAllowedResolver(String resolverName) {
+        // Accept more resolver types to capture more requests
+        // All type resolver: "StandardPlayerRequestResolver", "StandardRetryingRequestResolver", "StandardDeliveryRequestResolver", 
+        // "StandardPickupRequestResolver", "StandardCraftingRequestResolver", "StandardBuildingRequestResolver", "WarehouseConcreteRequestResolver"
+        return "StandardPlayerRequestResolver".equals(resolverName) ||
+               "StandardRetryingRequestResolver".equals(resolverName);
+    }
+    
     private MinecraftServer getServerInstance() {
         try {
             MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
@@ -753,6 +744,7 @@ public class McMod {
                 Class<?> iRequestManagerClass = Class.forName("com.minecolonies.api.colony.requestsystem.manager.IRequestManager");
                 Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
                 
+                @SuppressWarnings("unchecked")
                 Optional<Object> buildingOptional = (Optional<Object>) requester.getClass()
                     .getMethod("getBuilding", iRequestManagerClass, iTokenClass)
                     .invoke(requester, requestManager, requestId);
@@ -878,6 +870,27 @@ public class McMod {
                             context.getSource().sendSuccess(() -> Component.literal("In-game messages disabled"), false);
                             return 1;
                         })))
+                .then(Commands.literal("all")
+                    .executes(context -> {
+                        fulfillAllRequestsNoFilter();
+                        context.getSource().sendSuccess(() -> Component.literal("All requests fulfilled (no state filter)"), false);
+                        return 1;
+                    }))
+                .then(Commands.literal("custom")
+                    .then(Commands.argument("statuses", StringArgumentType.greedyString())
+                        .then(Commands.argument("resolvers", StringArgumentType.greedyString())
+                            .executes(context -> {
+                                String statusesArg = StringArgumentType.getString(context, "statuses");
+                                String resolversArg = StringArgumentType.getString(context, "resolvers");
+                                List<String> statuses = Arrays.asList(statusesArg.split(","));
+                                List<String> resolvers = Arrays.asList(resolversArg.split(","));
+                                fulfillRequestsByStatusAndResolver(statuses, resolvers);
+                                context.getSource().sendSuccess(() -> Component.literal("Custom autofulfill: statuses=" + statuses + ", resolvers=" + resolvers), false);
+                                return 1;
+                            })
+                        )
+                    )
+                )
                 .executes(context -> {
                     showAutofulfillStatus(context.getSource());
                     return 1;
@@ -898,6 +911,8 @@ public class McMod {
                     "/mcmod autofullfill enable|disable - Enable/disable autofulfill\n" +
                     "/mcmod autofullfill delay <seconds> - Set check interval\n" +
                     "/mcmod autofullfill message enable|disable - Enable/disable messages\n" +
+                    "/mcmod autofullfill all - Fulfill all requests (no state filter)\n" +
+                    "/mcmod autofullfill custom <statuses> <resolvers> - Fulfill all requests matching any status and resolver\n" +
                     "/mcmod stats - Show statistics\n" +
                     "/mcmod trigger - Trigger autofulfill manually"), false);
                 return 1;
@@ -982,7 +997,7 @@ public class McMod {
             // Check if enough time has passed since server start
             long currentTime = System.currentTimeMillis();
             long timeSinceStart = currentTime - modStartTime;
-            if (timeSinceStart < 120000) { // 2 minutes
+            if (timeSinceStart < 60000) { // 60 seconds
                 LOGGER.debug("[mc_mod] Not enough time passed since server start: {} ms", timeSinceStart);
                 return false;
             }
@@ -1036,6 +1051,8 @@ public class McMod {
     private void enableAutofulfill() {
         autofulfillEnabled = true;
         LOGGER.info("[mc_mod] Autofulfill enabled via command");
+        // Log all assigned requests when autofulfill is enabled
+        RequestLogger.logAllAssignedRequests();
     }
     
     private void disableAutofulfill() {
@@ -1105,6 +1122,165 @@ public class McMod {
             server.execute(() -> {
                 autoFulfillBuilderRequests();
             });
+        }
+    }
+
+    // Fulfill all requests in all colonies, no state filter
+    private void fulfillAllRequestsNoFilter() {
+        try {
+            Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
+            Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
+            if (apiInstance == null) {
+                LOGGER.warn("[mc_mod] MineColonies API not available");
+                return;
+            }
+            Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
+            if (colonyManager == null) {
+                LOGGER.warn("[mc_mod] Colony manager not available");
+                return;
+            }
+            Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
+            if (colonies == null) {
+                LOGGER.warn("[mc_mod] No colonies available");
+                return;
+            }
+            Collection<?> colonyCollection = (Collection<?>) colonies;
+            int fulfilled = 0;
+            for (Object colony : colonyCollection) {
+                Object requestManager = colony.getClass().getMethod("getRequestManager").invoke(colony);
+                if (requestManager == null) continue;
+                // Get resolvers
+                Object playerResolver = requestManager.getClass().getMethod("getPlayerResolver").invoke(requestManager);
+                Object retryingResolver = requestManager.getClass().getMethod("getRetryingRequestResolver").invoke(requestManager);
+                // Get all assigned tokens
+                Collection<?> playerTokens = (Collection<?>) playerResolver.getClass().getMethod("getAllAssignedRequests").invoke(playerResolver);
+                Collection<?> retryingTokens = (Collection<?>) retryingResolver.getClass().getMethod("getAllAssignedRequests").invoke(retryingResolver);
+                Set<Object> allTokens = new HashSet<>();
+                if (playerTokens != null) allTokens.addAll(playerTokens);
+                if (retryingTokens != null) allTokens.addAll(retryingTokens);
+                Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
+                for (Object token : allTokens) {
+                    Object request = requestManager.getClass().getMethod("getRequestForToken", iTokenClass).invoke(requestManager, token);
+                    if (request == null) continue;
+                    try {
+                        // Get the building/requester
+                        Object requester = request.getClass().getMethod("getRequester").invoke(request);
+                        Object building = getBuildingOfficial(requester, colony, request);
+                        if (building == null) continue;
+                        Object requestable = request.getClass().getMethod("getRequest").invoke(request);
+                        // --- Begin: Logging block ---
+                        // Get state
+                        Object state = request.getClass().getMethod("getState").invoke(request);
+                        String stateName = state.toString();
+                        // Get citizen
+                        Object citizen = getCitizenForRequest(building, request);
+                        String citizenName = "Unknown";
+                        if (citizen != null) {
+                            try {
+                                citizenName = (String) citizen.getClass().getMethod("getName").invoke(citizen);
+                            } catch (Exception e) {
+                                log("[mc_mod] Could not get citizen name: " + e.getMessage());
+                            }
+                        }
+                        // Get resolver
+                        Object requestId = request.getClass().getMethod("getId").invoke(request);
+                        Object resolver = requestManager.getClass().getMethod("getResolverForRequest", iTokenClass).invoke(requestManager, requestId);
+                        String resolverName = resolver != null ? resolver.getClass().getSimpleName() : "Unknown";
+                        // Get item info
+                        List<Object> displayStacks = getDisplayStacks(request);
+                        String itemName = "Unknown Item";
+                        int finalCount = 1;
+                        if (displayStacks != null && !displayStacks.isEmpty()) {
+                            try {
+                                Object itemStack = displayStacks.get(0);
+                                Object stackCopy = itemStack.getClass().getMethod("copy").invoke(itemStack);
+                                int count = getRequestCount(requestable);
+                                int maxStackSize = (int) stackCopy.getClass().getMethod("getMaxStackSize").invoke(stackCopy);
+                                finalCount = Math.min(count, maxStackSize);
+                                Object item = stackCopy.getClass().getMethod("getItem").invoke(stackCopy);
+                                itemName = item.getClass().getMethod("getDescriptionId").invoke(item).toString();
+                                if (itemName.startsWith("item.")) itemName = itemName.substring(5);
+                                if (itemName.startsWith("block.")) itemName = itemName.substring(6);
+                                itemName = itemName.replace("minecraft.", "").replace("minecolonies.", "");
+                            } catch (Exception e) {
+                                log("[mc_mod] Could not get item name: " + e.getMessage());
+                            }
+                        }
+                        String buildingName = building.getClass().getSimpleName().replace("Building", "");
+                        log("[✓] Fulfilled " + finalCount + "x " + itemName + " for " + buildingName + " (state: " + stateName + ", citizen: " + citizenName + ", resolver: " + resolverName + ")");
+                        // --- End: Logging block ---
+                        // Fulfill without state filter
+                        // fulfillRequestWithCreativeResolve(request, colony, building, requestable, "ANY", "ANY");
+                        fulfillRequestWithCreativeResolve(request, colony, building, requestable, stateName, resolverName);
+                        fulfilled++;
+                    } catch (Exception e) {
+                        LOGGER.error("[mc_mod] Error fulfilling request (no filter): {}", e.getMessage());
+                    }
+                }
+            }
+            LOGGER.info("[mc_mod] fulfillAllRequestsNoFilter: Fulfilled {} requests", fulfilled);
+        } catch (Exception e) {
+            LOGGER.error("[mc_mod] Error in fulfillAllRequestsNoFilter: {}", e.getMessage(), e);
+        }
+    }
+
+    // Fulfill all requests matching any status and resolver
+    private void fulfillRequestsByStatusAndResolver(List<String> statuses, List<String> resolvers) {
+        try {
+            Class<?> apiClass = Class.forName("com.minecolonies.api.IMinecoloniesAPI");
+            Object apiInstance = apiClass.getMethod("getInstance").invoke(null);
+            if (apiInstance == null) {
+                LOGGER.warn("[mc_mod] MineColonies API not available");
+                return;
+            }
+            Object colonyManager = apiInstance.getClass().getMethod("getColonyManager").invoke(apiInstance);
+            if (colonyManager == null) {
+                LOGGER.warn("[mc_mod] Colony manager not available");
+                return;
+            }
+            Object colonies = colonyManager.getClass().getMethod("getAllColonies").invoke(colonyManager);
+            if (colonies == null) {
+                LOGGER.warn("[mc_mod] No colonies available");
+                return;
+            }
+            Collection<?> colonyCollection = (Collection<?>) colonies;
+            int fulfilled = 0;
+            for (Object colony : colonyCollection) {
+                Object requestManager = colony.getClass().getMethod("getRequestManager").invoke(colony);
+                if (requestManager == null) continue;
+                Object playerResolver = requestManager.getClass().getMethod("getPlayerResolver").invoke(requestManager);
+                Object retryingResolver = requestManager.getClass().getMethod("getRetryingRequestResolver").invoke(requestManager);
+                Collection<?> playerTokens = (Collection<?>) playerResolver.getClass().getMethod("getAllAssignedRequests").invoke(playerResolver);
+                Collection<?> retryingTokens = (Collection<?>) retryingResolver.getClass().getMethod("getAllAssignedRequests").invoke(retryingResolver);
+                Set<Object> allTokens = new HashSet<>();
+                if (playerTokens != null) allTokens.addAll(playerTokens);
+                if (retryingTokens != null) allTokens.addAll(retryingTokens);
+                Class<?> iTokenClass = Class.forName("com.minecolonies.api.colony.requestsystem.token.IToken");
+                for (Object token : allTokens) {
+                    Object request = requestManager.getClass().getMethod("getRequestForToken", iTokenClass).invoke(requestManager, token);
+                    if (request == null) continue;
+                    try {
+                        Object state = request.getClass().getMethod("getState").invoke(request);
+                        String stateName = state.toString();
+                        Object requester = request.getClass().getMethod("getRequester").invoke(request);
+                        Object building = getBuildingOfficial(requester, colony, request);
+                        if (building == null) continue;
+                        Object requestable = request.getClass().getMethod("getRequest").invoke(request);
+                        Object requestId = request.getClass().getMethod("getId").invoke(request);
+                        Object resolver = requestManager.getClass().getMethod("getResolverForRequest", iTokenClass).invoke(requestManager, requestId);
+                        String resolverName = resolver != null ? resolver.getClass().getSimpleName() : "Unknown";
+                        if (statuses.contains(stateName) && resolvers.contains(resolverName)) {
+                            fulfillRequestWithCreativeResolve(request, colony, building, requestable, stateName, resolverName);
+                            fulfilled++;
+                        }
+                    } catch (Exception e) {
+                        LOGGER.error("[mc_mod] Error fulfilling request (custom): {}", e.getMessage());
+                    }
+                }
+            }
+            LOGGER.info("[mc_mod] fulfillRequestsByStatusAndResolver: Fulfilled {} requests", fulfilled);
+        } catch (Exception e) {
+            LOGGER.error("[mc_mod] Error in fulfillRequestsByStatusAndResolver: {}", e.getMessage(), e);
         }
     }
 } 

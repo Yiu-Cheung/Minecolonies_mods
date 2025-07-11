@@ -1,0 +1,20 @@
+---
+alwaysApply: true
+---
+when user reported test failed, 
+
+you should check latest.log and debug.log in C:\Users\LokYiu\AppData\Roaming\.minecraft\home\NeoForge 1.21.1\logs, 
+search for 'mc_mod', investigate the problem, always look at the solution from source code, 
+provide the possible plan how to fix, wait for user answer,
+
+when user answer, fix 
+
+you should implement fix, double check again with source code for the new change again,
+
+when you do build , 
+- you should also copy .\build\libs\*.jar to game mod folder C:\Users\LokYiu\AppData\Roaming\.minecraft\home\NeoForge 1.21.1\mods in 1 single command line in powershell.
+- then wait for game test report.
+
+when run git commit commad, 
+- always run commit and push in one sigle line in powershell 
+

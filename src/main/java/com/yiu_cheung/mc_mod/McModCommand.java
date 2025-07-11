@@ -60,6 +60,33 @@ public class McModCommand {
                 }
                 return 1;
             })
+            .then(Commands.literal("debug")
+                .executes(ctx -> {
+                    ServerPlayer sp;
+                    try {
+                        sp = ctx.getSource().getPlayerOrException();
+                    } catch (Exception e) {
+                        return 0;
+                    }
+                    sp.sendSystemMessage(Component.literal("[mc_mod] === Request Capture Debug Info ==="));
+                    sp.sendSystemMessage(Component.literal("[mc_mod] Active Request States:"));
+                    sp.sendSystemMessage(Component.literal("  - PENDING"));
+                    sp.sendSystemMessage(Component.literal("  - IN_PROGRESS"));
+                    sp.sendSystemMessage(Component.literal("  - FOLLOWUP_IN_PROGRESS"));
+                    sp.sendSystemMessage(Component.literal("  - IN_PROGRESS_DELIVERY"));
+                    sp.sendSystemMessage(Component.literal("  - FOLLOWUP_IN_PROGRESS_DELIVERY"));
+                    sp.sendSystemMessage(Component.literal("  - IN_PROGRESS_PICKUP"));
+                    sp.sendSystemMessage(Component.literal("  - FOLLOWUP_IN_PROGRESS_PICKUP"));
+                    sp.sendSystemMessage(Component.literal("[mc_mod] Allowed Resolver Types:"));
+                    sp.sendSystemMessage(Component.literal("  - StandardPlayerRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("  - StandardRetryingRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("  - StandardDeliveryRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("  - StandardPickupRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("  - StandardCraftingRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("  - StandardBuildingRequestResolver"));
+                    sp.sendSystemMessage(Component.literal("[mc_mod] ================================="));
+                    return 1;
+                }))
         );
     }
 
